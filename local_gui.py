@@ -39,7 +39,7 @@ if missing:
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 import os
-from matching import MatchingService
+from matching import MatchingService, DEFAULT_WEIGHTS
 
 class MatchingApp:
     def __init__(self, root):
@@ -49,12 +49,24 @@ class MatchingApp:
         self.premed_file = None
         self.medstudent_file = None
         self.results = None
+        
+        # Weight descriptions dictionary for use throughout the app
+        self.weight_descriptions = {
+            "year": "Year (M1-M4)",
+            "gap": "Gap Year",
+            "degree": "Undergrad Degree",
+            "clinical": "Clinical Interests",
+            "research": "Research Interests",
+            "motivation": "Motivation Essay",
+            "orgs": "Student Organizations"
+        }
+        
         self.create_widgets()
 
     def create_widgets(self):
         # File selection frame
         file_frame = tk.Frame(self.root)
-        file_frame.pack(padx=20, pady=20)
+        file_frame.pack(padx=20, pady=10)
 
         tk.Label(file_frame, text="PreMed Excel File:").grid(row=0, column=0, sticky="e")
         self.premed_entry = tk.Entry(file_frame, width=40)
@@ -66,7 +78,80 @@ class MatchingApp:
         self.medstudent_entry.grid(row=1, column=1)
         tk.Button(file_frame, text="Browse", command=self.browse_medstudent).grid(row=1, column=2)
 
-        tk.Button(file_frame, text="Run Matching", command=self.run_matching, bg="#4CAF50", fg="black").grid(row=2, column=0, columnspan=3, pady=10)
+        # Add weights configuration section
+        weights_frame = tk.LabelFrame(self.root, text="Matching Weights")
+        weights_frame.pack(padx=20, pady=10, fill="x")
+        
+        # Get default weights from the matcher
+        self.weights = DEFAULT_WEIGHTS.copy()
+        
+        # Weight sliders with labels
+        self.weight_vars = {}
+        self.percentage_vars = {}  # Move this outside the loop
+        
+        # Create sliders for each weight
+        for i, (key, value) in enumerate(self.weights.items()):
+            # Row with label and percentage display
+            tk.Label(weights_frame, text=self.weight_descriptions.get(key, key)).grid(row=i, column=0, sticky="w", padx=5, pady=2)
+            
+            # Create StringVar to track percentage
+            percentage_var = tk.StringVar(value=f"{int(value*100)}%")
+            self.percentage_vars[key] = percentage_var  # Store in class dictionary
+            
+            # Create slider variable 
+            slider_var = tk.DoubleVar(value=value)
+            self.weight_vars[key] = slider_var
+            
+            # Create and place slider
+            slider = tk.Scale(weights_frame, from_=0.0, to=1.0, resolution=0.05, 
+                             orient=tk.HORIZONTAL, variable=slider_var, showvalue=False,
+                             length=200)
+            slider.grid(row=i, column=1, padx=5, pady=2)
+            
+            # Set up a callback for this specific slider
+            def update_percentage(val, k=key):
+                self.weights[k] = float(val)
+                self.percentage_vars[k].set(f"{int(float(val)*100)}%")
+                
+            slider.config(command=update_percentage)
+            
+            # Display percentage
+            tk.Label(weights_frame, textvariable=percentage_var, width=5).grid(row=i, column=2, padx=5, pady=2)
+        
+        # Buttons row for weights
+        buttons_frame = tk.Frame(weights_frame)
+        buttons_frame.grid(row=len(self.weights), column=0, columnspan=3, pady=10)
+        
+        # Reset weights button
+        def reset_weights():
+            for key, value in DEFAULT_WEIGHTS.items():
+                self.weight_vars[key].set(value)
+                self.weights[key] = value
+                self.percentage_vars[key].set(f"{int(value*100)}%")
+            
+        tk.Button(buttons_frame, text="Reset to Defaults", command=reset_weights).pack(side=tk.LEFT, padx=5)
+        
+        # Normalize weights button
+        def normalize_weights():
+            # Get current sum of weights
+            total = sum(self.weight_vars[key].get() for key in self.weights)
+            if total == 0:
+                messagebox.showwarning("Warning", "All weights are zero. Cannot normalize.")
+                return
+                
+            # Normalize to sum to 1.0
+            for key in self.weights:
+                normalized = self.weight_vars[key].get() / total
+                self.weight_vars[key].set(normalized)
+                self.weights[key] = normalized
+                self.percentage_vars[key].set(f"{int(normalized*100)}%")
+                
+        tk.Button(buttons_frame, text="Normalize Weights", command=normalize_weights).pack(side=tk.LEFT, padx=5)
+        
+        # Run matching button below the weights
+        tk.Button(self.root, text="Run Matching", command=self.run_matching, 
+                 bg="#4CAF50", fg="black", font=("Helvetica", 12, "bold"), 
+                 padx=20, pady=10).pack(pady=10)
 
         # Results frame with scrollbar
         container = tk.Frame(self.root)
@@ -175,6 +260,11 @@ class MatchingApp:
         # Overall Match Index
         global_frame = tk.LabelFrame(scrollable_frame, text="Overall Match Index")
         global_frame.pack(fill="x", expand=True, pady=5)
+        
+        # Add label to show weights used for matching
+        self.global_weights_label = tk.Label(global_frame, text="Weights used: ", anchor="w", wraplength=800, justify="left")
+        self.global_weights_label.pack(anchor="w", padx=5, pady=(2,0))
+        
         self.global_tree = ttk.Treeview(
             global_frame,
             columns=("med_student_id", "index", "year", "gap", "degree", "clinical", "research", "motivation", "orgs"),
@@ -208,7 +298,20 @@ class MatchingApp:
             messagebox.showerror("Error", "Please select both Excel files.")
             return
         try:
+            # Show a "matching in progress" message with selected weights
+            weights_str = ", ".join([f"{k}: {int(v*100)}%" for k, v in self.weights.items()])
+            self.root.title(f"MedConnector Local Matcher - Running... (Weights: {weights_str})")
+            self.root.update()  # Force UI update to show new title
+            
+            # Load data and run basic matching
             self.matcher.load_data(self.medstudent_file)
+            
+            # Set custom weights (this will override any environment variables)
+            import os
+            import json
+            os.environ["MATCH_WEIGHTS"] = json.dumps(self.weights)
+            
+            # Run matching with the custom weights
             self.results = self.matcher.match_single_premed(self.premed_file)
             
             # ——— Pull premed research interests and motivation essay safely ———
@@ -242,12 +345,16 @@ class MatchingApp:
             else:
                 self.results['motivation_matches'] = []
                 
+            # Reset title and display results
+            self.root.title("MedConnector Local Matcher")
             self.display_results()
+            
         except Exception as e:
             import traceback
             error_msg = f"Failed to run matching: {e}\n\n{traceback.format_exc()}"
             print(error_msg)  # Print to console for debugging
             messagebox.showerror("Error", error_msg)
+            self.root.title("MedConnector Local Matcher")
 
     def display_results(self):
         # Clear existing results
@@ -282,6 +389,10 @@ class MatchingApp:
             self.org_premed_label.config(text=f"Premed answer: {safe_get(premed, 'Q6')}")
             self.research_premed_label.config(text=f"Premed answer: {safe_get(premed, 'Q5')}")
             self.motivation_premed_label.config(text=f"Premed answer: {safe_get(premed, 'Q7')}")
+
+        # Show weights used for this match in the global section
+        weights_str = ", ".join([f"{self.weight_descriptions.get(k, k)}: {int(v*100)}%" for k, v in self.weights.items()])
+        self.global_weights_label.config(text=f"Weights used: {weights_str}")
 
         # Display global match index
         for match in self.results.get('global_matches', []):
