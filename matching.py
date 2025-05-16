@@ -48,6 +48,11 @@ class MatchingService:
         self.premed_df = None
         self.embedding_model = SentenceTransformer('all-mpnet-base-v2')
         
+        # For TF-IDF calculations
+        self.tfidf_vectorizer = TfidfVectorizer(stop_words='english', max_features=100)
+        self.tfidf_matrix = None
+        self.tfidf_docs = []
+        
         # Explicitly define BiomedBERT with mean pooling
         word_embed = models.Transformer(
             'microsoft/BiomedNLP-BiomedBERT-base-uncased-abstract',
@@ -71,6 +76,64 @@ class MatchingService:
         if premed_path:
             self.premed_df = pd.read_excel(premed_path)
             self.premed_df.columns = self.premed_df.columns.str.strip()
+            
+        # Initialize TF-IDF with research interests from the dataset
+        self._initialize_tfidf_model()
+
+    def _initialize_tfidf_model(self):
+        """
+        Initialize the TF-IDF model with all research interests in the dataset.
+        This allows for better domain-specific term weighting.
+        """
+        # Extract all research interests
+        research_docs = []
+        
+        # Add med student research
+        if self.med_students_df is not None:
+            for _, row in self.med_students_df.iterrows():
+                research = self._safe_get(row, 'Q5', "")
+                if research and len(research.strip()) > 0:
+                    research_docs.append(research)
+                    
+        # Add premed research if available
+        if self.premed_df is not None:
+            for _, row in self.premed_df.iterrows():
+                research = self._safe_get(row, 'Q5', "")
+                if research and len(research.strip()) > 0:
+                    research_docs.append(research)
+        
+        # Fit the TF-IDF vectorizer on all research texts
+        if research_docs:
+            self.tfidf_docs = research_docs
+            self.tfidf_matrix = self.tfidf_vectorizer.fit_transform(research_docs)
+        
+    def _compute_tfidf_similarity(self, text1: str, text2: str) -> float:
+        """
+        Compute TF-IDF cosine similarity between two research interest statements.
+        If the TF-IDF model hasn't been initialized, will return 0.
+        """
+        if not self.tfidf_vectorizer or not isinstance(text1, str) or not isinstance(text2, str):
+            return 0.0
+            
+        # Clean the texts
+        text1 = text1.strip().lower()
+        text2 = text2.strip().lower()
+        
+        if not text1 or not text2:
+            return 0.0
+            
+        try:
+            # Transform using the fitted vectorizer
+            vec1 = self.tfidf_vectorizer.transform([text1])
+            vec2 = self.tfidf_vectorizer.transform([text2])
+            
+            # Compute cosine similarity
+            from sklearn.metrics.pairwise import cosine_similarity
+            sim = float(cosine_similarity(vec1, vec2)[0][0])
+            return sim
+        except Exception as e:
+            print(f"Error computing TF-IDF similarity: {e}")
+            return 0.0
 
     def _convert_year(self, year_str: str) -> int:
         """
@@ -237,40 +300,6 @@ class MatchingService:
             })
         matches.sort(key=lambda x: x["score"], reverse=True)
         return matches
-
-    def match_research_interest_pair(self, premed_research: str, med_research: str) -> float:
-        """
-        Compute similarity score between a premed and med student's research interests using the same logic as match_by_research_interests, but for a single pair.
-        """
-        # Defensive: always convert to string if not already
-        if not isinstance(premed_research, str):
-            premed_clean = str(premed_research).strip().lower()
-        else:
-            premed_clean = premed_research.strip().lower()
-        if not isinstance(med_research, str):
-            med_clean = str(med_research).strip().lower()
-        else:
-            med_clean = med_research.strip().lower()
-        if not premed_clean or not med_clean or premed_clean == "n/a" or med_clean == "n/a":
-            return 0.0
-        premed_keywords = self._extract_keywords(premed_clean)
-        med_keywords = self._extract_keywords(med_clean)
-        # Jaccard keyword overlap
-        if premed_keywords or med_keywords:
-            jaccard = len(premed_keywords & med_keywords) / len(premed_keywords | med_keywords) if (premed_keywords | med_keywords) else 0.0
-        else:
-            jaccard = 0.0
-        # BiomedBERT embedding similarity
-        emb1 = self.bio_embedder.encode(premed_clean, convert_to_tensor=True)
-        emb2 = self.bio_embedder.encode(med_clean, convert_to_tensor=True)
-        embedding_score = float(util.cos_sim(emb1, emb2)[0][0])
-        # Weighted hybrid score
-        score = 0.6 * embedding_score + 0.4 * jaccard
-        # Direct substring match boost (case-insensitive)
-        if premed_clean and premed_clean in med_clean:
-            score += 0.3  # Significant boost for direct match
-        score = min(score, 1.0)  # Cap at 1.0
-        return score
 
     def _normalize_clinical_fields(self, row):
         # Always work on a copy to avoid pandas SettingWithCopyWarning
@@ -710,7 +739,8 @@ class MatchingService:
 
     def match_by_research_interests(self, premed_research: str) -> List[Dict[str, Any]]:
         """
-        Hybrid: Combine BiomedBERT embedding similarity and Jaccard keyword overlap, and add a direct substring match boost (case-insensitive). No generic response penalty.
+        Hybrid: Combine BiomedBERT embedding similarity, Jaccard keyword overlap, fuzzy matching, and TF-IDF similarity,
+        with a direct substring match boost (case-insensitive).
         """
         # More robust handling of input
         if not isinstance(premed_research, str):
@@ -759,13 +789,23 @@ class MatchingService:
                 embedding_score = float(util.cos_sim(emb1, emb2)[0][0])
             except Exception:
                 embedding_score = 0.0
+            
+            # Fuzzy matching score
+            fuzzy_score = fuzz.token_set_ratio(premed_clean, med_clean) / 100.0
+            
+            # TF-IDF similarity 
+            tfidf_score = self._compute_tfidf_similarity(premed_clean, med_clean)
                 
-            # Weighted hybrid score
-            score = 0.6 * embedding_score + 0.4 * jaccard
+            # Weighted hybrid score - match weights in match_research_interest_pair
+            score = 0.6 * embedding_score + 0.1 * jaccard + 0.1 * fuzzy_score + 0.2 * tfidf_score
+            
+            # Relevance filter: require some keyword overlap OR a reasonable fuzzy match
+            # This prevents completely unrelated fields from matching just because of embedding similarity
+            if jaccard == 0.0 and fuzzy_score < 0.4 and tfidf_score < 0.3:
+                score = score * 0.2  # Apply a stronger penalty when no meaningful overlap
             
             # Direct substring match boost (case-insensitive)
-            # Explicit length check to avoid boolean context
-            if len(premed_clean) > 0 and premed_clean in med_clean:
+            if premed_clean and premed_clean in med_clean:
                 score += 0.3  # Significant boost for direct match
                 
             score = min(score, 1.0)  # Cap at 1.0
@@ -882,3 +922,48 @@ class MatchingService:
             results.append({"med_student_id": med_row.name, "index": index, **scores})
         results.sort(key=lambda x: x["index"], reverse=True)
         return results
+
+    def match_research_interest_pair(self, premed_research: str, med_research: str) -> float:
+        """
+        Compute similarity score between a premed and med student's research interests using the same logic as match_by_research_interests, but for a single pair.
+        """
+        # Defensive: always convert to string if not already
+        if not isinstance(premed_research, str):
+            premed_clean = str(premed_research).strip().lower()
+        else:
+            premed_clean = premed_research.strip().lower()
+        if not isinstance(med_research, str):
+            med_clean = str(med_research).strip().lower()
+        else:
+            med_clean = med_research.strip().lower()
+        if not premed_clean or not med_clean or premed_clean == "n/a" or med_clean == "n/a":
+            return 0.0
+        premed_keywords = self._extract_keywords(premed_clean)
+        med_keywords = self._extract_keywords(med_clean)
+        # Jaccard keyword overlap
+        if premed_keywords or med_keywords:
+            jaccard = len(premed_keywords & med_keywords) / len(premed_keywords | med_keywords) if (premed_keywords | med_keywords) else 0.0
+        else:
+            jaccard = 0.0
+        # BiomedBERT embedding similarity
+        emb1 = self.bio_embedder.encode(premed_clean, convert_to_tensor=True)
+        emb2 = self.bio_embedder.encode(med_clean, convert_to_tensor=True)
+        embedding_score = float(util.cos_sim(emb1, emb2)[0][0])
+        # Fuzzy string matching score
+        fuzzy_score = fuzz.token_set_ratio(premed_clean, med_clean) / 100.0
+        # TF-IDF similarity
+        tfidf_score = self._compute_tfidf_similarity(premed_clean, med_clean)
+        
+        # Weighted hybrid score - now with 4 components
+        score = 0.6 * embedding_score + 0.1 * jaccard + 0.1 * fuzzy_score + 0.2 * tfidf_score
+        
+        # Relevance filter: require some keyword overlap OR a reasonable fuzzy match
+        # This prevents completely unrelated fields from matching just because of embedding similarity
+        if jaccard == 0.0 and fuzzy_score < 0.4 and tfidf_score < 0.3:
+            score = score * 0.2  # Apply a stronger penalty when no meaningful overlap
+        
+        # Direct substring match boost (case-insensitive)
+        if premed_clean and premed_clean in med_clean:
+            score += 0.3  # Significant boost for direct match
+        score = min(score, 1.0)  # Cap at 1.0
+        return score
