@@ -1,6 +1,6 @@
 
 # Matching Service – Deep‑Dive Documentation
-_Authors: VWD + ChatGPT 2025
+_Authors: VWD + o3 2025
 
 > **Goal of this file:** give both a *walk‑through* of each matching function **and** instant jump‑links to a mini‑glossary of the underlying algorithms (RapidFuzz, TF‑IDF, etc.).  
 > Click a blue link like **[TF‑IDF](#tfidf)** any time it appears to read what it means and see a toy example.
