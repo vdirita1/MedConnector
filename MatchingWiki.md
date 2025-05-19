@@ -1,173 +1,230 @@
-# Matching Service – Deep-Dive Documentation (rev 2025-05-19)
-_Authors · VWD + o3 2025_
+# Matching Service – Deep‑Dive Documentation (rev 2025-05-19 v3)
 
-> **Goal** – Explain every matching function, list exact weights, show two worked examples **and** embed mini-glossary definitions (with runnable code snippets) for every algorithm term.  
-> Click any blue link such as **[TF-IDF](#tf-idf)** or **[RapidFuzz](#rapidfuzz)** to jump straight to its definition.
+*Authors: VWD + o3 2025*
+
+> **Goal:** Provide a transparent walk‑through of every matching function **plus** two step‑by‑step worked examples for each one, with instant jump‑links to a glossary of the underlying algorithms (RapidFuzz, TF‑IDF, etc.).
+> Click any blue term (e.g. **[TF‑IDF](#tfidf)**) to jump to its mini‑explanation.
 
 ---
 
-## Table of Contents
-1. [Component matchers](#component-matchers)  
-2. [Overall match index](#overall-match-index)  
+## Table of Contents
+
+1. [Component matchers](#component-matchers)
+
+   1. [match\_by\_year](#match_by_year)
+   2. [match\_by\_gap\_year](#match_by_gap_year)
+   3. [match\_by\_undergrad\_degree](#match_by_undergrad_degree)
+   4. [match\_by\_clinical\_interests](#match_by_clinical_interests)
+   5. [match\_by\_student\_orgs](#match_by_student_orgs)
+   6. [match\_by\_research\_interests](#match_by_research_interests)
+   7. [match\_by\_motivation\_essay](#match_by_motivation_essay)
+2. [Overall match index](#overall-match-index)
 3. [Algorithm glossary](#algorithm-glossary)
 
 ---
 
-<a name="component-matchers"></a>
-## Component matchers  
-*(Each subsection shows logic, exact weights, and two worked examples.)*
+## Component matchers
 
-### 1 · `match_by_year`
-| Relationship | Score |
-|--------------|-------|
-| Same year    | **1.0** |
-| ±1 year     | 0.5 |
-| Otherwise   | 0.0 |
+### <a id="match_by_year"></a>1 · match\_by\_year
 
-**Examples**
+**What it checks:** Does the med‑student’s academic year (M1–M4) satisfy the pre‑med’s preference?
+**Scoring rule**
 
-| Premed wants | Med year | Score |
-|--------------|----------|-------|
-| M2           | M2       | 1.0 |
-| M2           | M3       | 0.5 |
+| Year difference | Score |
+| --------------- | ----- |
+| 0 (exact)       | 1.0   |
+| 1 (adjacent)    | 0.5   |
+| ≥2              | 0.0   |
 
----
+#### Worked examples
 
-### 2 · `match_by_gap_year`
-_Map “None → 0”, “1 → 1”, “2 → 2”, “More than 2 → 3”._
+| Premed wants | Med student is | Output score |
+| ------------ | -------------- | ------------ |
+| M2           | M2             | 1.00         |
+| M2           | M1             | 0.50         |
 
-| Gap-year diff. | Score |
-|----------------|-------|
-| 0              | **1.0** |
-| 1              | 0.5 |
-| ≥ 2            | 0.0 |
+### <a id="match_by_gap_year"></a>2 · match\_by\_gap\_year
 
-**Examples**
+**What it checks:** Preferred *gap year* count (“None”, “1”, “2”, “More than 2”).
 
-| Premed pref. | Med actual | Diff | Score |
-|--------------|------------|------|-------|
-| “1”          | “1”        | 0   | 1.0 |
-| “>2”         | “1”        | 2   | 0.0 |
+#### Mapping to integers
 
----
+| Label       | Internal code |
+| ----------- | ------------- |
+| None        | 0             |
+| 1           | 1             |
+| 2           | 2             |
+| More than 2 | 3             |
 
-### 3 · `match_by_student_orgs`
-*Exact, case-insensitive set overlap.*
+Score is computed exactly like *match\_by\_year* on the converted codes.
 
-| ≥ 1 shared org? | Score |
-|-----------------|-------|
-| Yes             | **1.0** |
-| No              | 0.0 |
+#### Worked examples
 
-**Examples**
+| Premed wants | Med student gap | Score |
+| ------------ | --------------- | ----- |
+| None         | None            | 1.00  |
+| 1            | More than 2     | 0.00  |
 
-| Premed orgs                | Med orgs                     | Score |
-|----------------------------|------------------------------|-------|
-| AMSA, Neurology Club       | Neurology Club               | 1.0 |
-| Surgery Society            | Public Health Association    | 0.0 |
+### <a id="match_by_undergrad_degree"></a>3 · match\_by\_undergrad\_degree
 
----
+**What it checks:** Similarity between undergraduate degree descriptions using a hybrid of
+• [RapidFuzz](#rapidfuzz) token‑set ratio,
+• [BiomedBERT](#biomedbert) semantic similarity,
+• direct substring match, and
+• domain‑specific boosts / penalties.
 
-### 4 · `match_by_undergrad_degree`
+Weights (default): `0.2 fuzzy + 0.55 semantic + 0.25 direct`.
 
-| Component                                         | Weight |
-|---------------------------------------------------|--------|
-| [RapidFuzz](#rapidfuzz) `token_set_ratio`         | 20 % |
-| [BiomedBERT](#biomedbert) cosine similarity       | 55 % |
-| Direct substring bonus                            | 25 % |
+#### Worked examples
 
-*Post-blend boosts/penalties (clipped to \[0, 1\])*  
-+0–0.30 shared biology keywords · +0–0.20 shared medical keywords  
-+0.25 same domain group · +0.30 **human biology ↔ physiology**  
-−0.40 sociology ↔ biology mismatch
+| Premed degree          | Med degree | Approx. score |
+| ---------------------- | ---------- | ------------- |
+| Human Biology          | Physiology | ≈ 0.83        |
+| Mechanical Engineering | Sociology  | ≈ 0.12        |
 
-**Examples**
+### <a id="match_by_clinical_interests"></a>4 · match\_by\_clinical\_interests
 
-| Premed degree | Med degree        | Notes                     | Score (≈) |
-|---------------|-------------------|---------------------------|-----------|
-| Human Biology | Physiology        | Pair boost +0.30          | 0.92 |
-| Sociology     | Molecular Biology | Sociology penalty −0.40   | 0.28 |
+**What it checks:** Overlap between checkbox clinical interests **and** free‑text entries.
 
----
+| Component                                 | Share |
+| ----------------------------------------- | ----- |
+| Jaccard overlap                           | ⅓     |
+| [RapidFuzz](#rapidfuzz) `token_set_ratio` | ⅓     |
+| **[BiomedBERT](#biomedbert)** similarity  | ⅓     |
 
-### 5 · `match_by_clinical_interests`
+#### Worked examples
 
-| Component                              | Weight |
-|----------------------------------------|--------|
-| Jaccard overlap                        | 33 % |
-| [RapidFuzz](#rapidfuzz) token-set      | 33 % |
-| [BiomedBERT](#biomedbert) similarity   | 33 % |
+| Premed set            | Med set              | Resulting score |
+| --------------------- | -------------------- | --------------- |
+| Cardiology, Neurology | Cardiology, Oncology | ≈ 0.55          |
+| Dermatology           | Orthopaedics         | 0.00            |
 
-**Examples**
+### <a id="match_by_student_orgs"></a>5 · match\_by\_student\_orgs
 
-| Premed list              | Med list                      | Score (≈) |
-|--------------------------|-------------------------------|-----------|
-| Neurosurgery, Oncology   | Oncology, Neurosurgery        | 1.0 |
-| Dermatology, Plastic Sx  | Family Med, Emergency Med     | 0.11 |
+**What it checks:** Exact case‑insensitive overlap of student‑organisation names.
+Returns **1.0** if *any* org intersects, else **0.0**.
 
----
+#### Worked examples
 
-### 6 · `match_by_research_interests`
+| Premed orgs     | Med orgs                  | Score |
+| --------------- | ------------------------- | ----- |
+| AMSA, Red Cross | Red Cross / Global Health | 1.00  |
+| AMSA            | SNMA                      | 0.00  |
 
-| Component                         | Weight |
-|-----------------------------------|--------|
-| [BiomedBERT](#biomedbert) embed.  | 60 % |
-| Jaccard keywords                  | 10 % |
-| RapidFuzz token-set               | 10 % |
-| **[TF-IDF](#tf-idf)** cosine     | 20 % |
+### <a id="match_by_research_interests"></a>6 · match\_by\_research\_interests
 
-*Pairs with **zero** lexical overlap are down-weighted.*
+**Hybrid recipe**
 
-**Examples**
+| Component                                | Weight |
+| ---------------------------------------- | ------ |
+| **[BiomedBERT](#biomedbert)** similarity | 0.60   |
+| Keyword Jaccard                          | 0.10   |
+| [RapidFuzz](#rapidfuzz) fuzzy            | 0.10   |
+| **[TF‑IDF](#tfidf)** cosine              | 0.20   |
 
-| Premed statement                     | Med statement                              | Score (≈) |
-|--------------------------------------|--------------------------------------------|-----------|
-| Alzheimer’s biomarkers in CSF        | CSF biomarkers for early Alzheimer’s       | 0.88 |
-| Global health policy on malaria      | Neural stem-cell differentiation in mice   | 0.12 |
+Plus a *direct‑substring boost* (+0.3) if one text fully contains the other.
 
----
+#### Worked examples
 
-### 7 · `match_by_motivation_essay`
+| Premed research            | Med research               | Approx. score |
+| -------------------------- | -------------------------- | ------------- |
+| Glioblastoma immunotherapy | Brain tumour immunotherapy | ≈ 0.80        |
+| Renewable energy policy    | Cardiac stem‑cell therapy  | ≈ 0.10        |
 
-| Component                | Weight |
-|--------------------------|--------|
-| `all-mpnet-base-v2` embeddings | 50 % |
-| Motivation-keyword Jaccard    | 30 % |
-| TF-IDF cosine                 | 20 % |
+### <a id="match_by_motivation_essay"></a>7 · match\_by\_motivation\_essay
 
-**Examples**
+**What it checks:** Similarity of free‑text motivation essays using
 
-| Premed snippet                                         | Med snippet                                     | Score (≈) |
-|--------------------------------------------------------|-------------------------------------------------|-----------|
-| Compassionate care + translational research            | Blend bedside care with bench discoveries       | 0.79 |
-| Fascinated by hospital admin & policy                  | Rural family-medicine outreach                  | 0.27 |
+* general [Sentence‑BERT](#sentencebert) embeddings,
+* motivation‑keyword Jaccard, and
+* **[TF‑IDF](#tfidf)** cosine.
 
----
+Weights: `0.5 embedding + 0.3 keywords + 0.2 tfidf`.
 
-<a name="overall-match-index"></a>
-## Overall match index
+#### Worked examples
+
+| Scenario                                                            | Explanation                             | Score  |
+| ------------------------------------------------------------------- | --------------------------------------- | ------ |
+| Both emphasise *service* and *community health*                     | High keyword overlap ➜ embedding ≈ 0.75 | ≈ 0.75 |
+| Premed focuses on *basic research*; Med focuses on *global surgery* | Low overlap                             | ≈ 0.25 |
+
+## <a id="overall-match-index"></a>Overall match index
+
+`overall_match_index()` takes the 7 component scores above and combines them with **\_active\_weights()**
+(default weights shown below; runtime overrides allowed via `MATCH_WEIGHTS`).
 
 | Component  | Default weight |
-|------------|----------------|
-| year       | 0.20 |
-| gap        | 0.10 |
-| degree     | 0.15 |
-| clinical   | 0.25 |
-| research   | 0.15 |
-| motivation | 0.10 |
-| orgs       | 0.05 |
+| ---------- | -------------- |
+| year       | 0.20           |
+| gap        | 0.10           |
+| degree     | 0.15           |
+| clinical   | 0.25           |
+| research   | 0.15           |
+| motivation | 0.10           |
+| orgs       | 0.05           |
 
-`_safe_weighted_sum` divides by the sum of **present** weights so missing data never inflate the index.
+The helper **\_safe\_weighted\_sum** divides by the sum of weights actually present, keeping the final index safely between 0‑1 even if some components are missing.
+
+#### Worked example
+
+Suppose the component scores for a given med‑student are
+
+| year | gap | degree | clinical | research | motivation | orgs |
+| ---- | --- | ------ | -------- | -------- | ---------- | ---- |
+| 1.0  | 0.5 | 0.83   | 0.55     | 0.80     | 0.75       | 1.0  |
+
+Weighted sum =
+`(0.2·1.0 + 0.1·0.5 + 0.15·0.83 + 0.25·0.55 + 0.15·0.80 + 0.10·0.75 + 0.05·1.0) / 1.0` ≈ **0.78**
+
+This med‑student would appear near the top of the recommendations.
 
 ---
 
-<a name="algorithm-glossary"></a>
-## Algorithm glossary
+## <a id="algorithm-glossary"></a>Algorithm glossary
 
-### <a name="rapidfuzz"></a>RapidFuzz – fuzzy string matching
-Normalised Levenshtein distance; `token_set_ratio` first converts each string to a **set** of unique tokens, ignoring order and duplicates.  
-Range 0 – 100 → scaled to 0 – 1.
+### <a id="rapidfuzz"></a>RapidFuzz – fuzzy string matching
+
+* Computes normalised Levenshtein distance; `token_set_ratio` first splits each string into the **set** of unique tokens, so word order and duplicates don’t matter.
+* Raw score range 0 – 100 → divided by 100 in code to give 0 – 1.
+
+**Toy example**
+
+| s1              | s2                       | token\_set\_ratio |
+| --------------- | ------------------------ | ----------------- |
+| "Human Biology" | "Biology, Human"         | 100               |
+| "Biology"       | "Biomedical Engineering" | 32                |
+
+### <a id="tfidf"></a>TF‑IDF – term‑frequency / inverse‑document‑frequency
+
+* Converts every document into a sparse vector of term weights.
+* High weight for words frequent in the document **but rare** across the corpus.
+* Cosine similarity on these vectors measures lexical overlap beyond exact matches.
 
 ```python
-from rapidfuzz import fuzz
-fuzz.token_set_ratio("Human Biology", "Biology, Human")  # 100
+from sklearn.feature_extraction.text import TfidfVectorizer
+vec = TfidfVectorizer(stop_words='english')
+X = vec.fit_transform(["brain tumour immunotherapy",
+                       "glioblastoma immunotherapy"])
+from sklearn.metrics.pairwise import cosine_similarity
+cosine_similarity(X[0], X[1]).item()  # ≈ 0.67
+```
+
+### <a id="jaccard"></a>Jaccard overlap
+
+* For two sets *A* and *B*: **|A ∩ B| / |A ∪ B|**
+* Returns 1 when sets identical, 0 when disjoint.
+
+### <a id="biomedbert"></a>BiomedBERT – domain‑tuned sentence embeddings
+
+* `microsoft/BiomedNLP‑BiomedBERT‑base‑uncased‑abstract` fine‑tuned on PubMed abstracts.
+* Provides dense 768‑dim vectors well‑suited for biomedical semantics.
+* Similarity via cosine – see `util.cos_sim`.
+
+### <a id="sentencebert"></a>Sentence‑BERT (all‑mpnet‑base‑v2)
+
+* General‑purpose 768‑dim embeddings for any English text.
+* Good for longer free‑text such as motivation essays.
+
+### Safe weighted average
+
+`_safe_weighted_sum(scores, weights)` divides by the sum of **provided** weights, so if a component is missing the result stays safely in 0‑1.
