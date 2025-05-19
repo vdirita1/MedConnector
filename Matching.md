@@ -1,113 +1,124 @@
 
-# Matching Service – Deep‑Dive Documentation
-_Authors: VWD + o3 2025
+# Matching Service – Deep‑Dive Documentation (rev 2025-05-19)
+_Authors: VWD + o3 2025_
 
-> **Goal of this file:** give both a *walk‑through* of each matching function **and** instant jump‑links to a mini‑glossary of the underlying algorithms (RapidFuzz, TF‑IDF, etc.).  
-> Click a blue link like **[TF‑IDF](#tfidf)** any time it appears to read what it means and see a toy example.
+> **Goal:** Give a transparent walk‑through of every matching function **and** instant jump‑links to a glossary of their underlying algorithms.  
+> Click any blue term (e.g. **[TF‑IDF](#tfidf)**) to jump to its mini‑explanation.
 
 ---
-
-## Table of Contents
-1. [Component matchers](#component-matchers)  
-2. [Overall match index](#overall-match-index)  
-3. [Algorithm glossary](#algorithm-glossary)  
+## Table of Contents
+1. [Component matchers](#component-matchers)
+2. [Overall match index](#overall-match-index)
+3. [Algorithm glossary](#algorithm-glossary)
 
 ---
 
 ## Component matchers
-Each subsection explains the logic and shows two mini‑examples.  
-Algorithm names link to their glossary entries.
+Each subsection explains the scoring logic, **lists exact weights**, and shows mini‑examples.
 
-### 1 · match_by_year  
-*Exact / adjacent M‑year logic.*
+### 1 · match_by_year
+*Exact vs. adjacent M‑year logic.*
 
-| Student year | Score rationale |
-|--------------|-----------------|
-| same year    | **1.0** |
-| ±1 year      | 0.5 |
-| otherwise    | 0.0 |
-
-<details><summary>Examples</summary>
-
-| Premed wants | Student year | Score |
-|--------------|--------------|-------|
-| M1 | M1 | **1.0** |
-| M1 | M2 | 0.5 |
-| M3 | M2 | 0.5 |
-| M3 | M4 | 0.5 |
-| M1 | M3 | 0.0 |
-</details>
+| Student year | Score |
+|--------------|-------|
+| Same year    | **1.0** |
+| ±1 year      | 0.5 |
+| Otherwise    | 0.0 |
 
 ---
 
-### 2 · match_by_gap_year  
-Same scoring scheme, after mapping `"None"→0`, `"1"→1`, `"2"→2`, `"More than 2"→3`.
+### 2 · match_by_gap_year
+Same three‑level scoring after mapping  
+`"None"→0`, `"1"→1`, `"2"→2`, `"More than 2"→3`.
 
 ---
 
-### 3 · match_by_student_orgs  
-Uses **exact set overlap** – if any organisation name matches (case‑insensitive) score = 1, else 0.
+### 3 · match_by_student_orgs
+*Exact case‑insensitive set overlap.*
+
+| Overlap? | Score |
+|----------|-------|
+| ≥1 shared org | **1.0** |
+| None          | 0.0 |
 
 ---
 
-### 4 · match_by_undergrad_degree  
-Hybrid score:
+### 4 · match_by_undergrad_degree
 
-* **[RapidFuzz](#rapidfuzz)** `token_set_ratio` (20 %)  
-* **[Bio‑BERT embeddings](#sentencebert)** cosine (55 %)  
-* **Direct substring bonus** (25 %)  
-* Domain boosts / penalties
-
-Why a hybrid? RapidFuzz catches near‑string matches, embeddings catch conceptual matches (“Physiology” ↔ “Human Biology”).
-
----
-
-### 5 · match_by_clinical_interests  
-Steps  
-
-1. Normalise checkbox + free‑text into sets.  
-2. Compute  
-   * Jaccard overlap  
-   * RapidFuzz fuzzy ratio  
-   * **[Bio‑BERT](#sentencebert)** similarity  
-3. Return their average.
-
----
-
-### 6 · match_by_research_interests  
-Four‑way blend:
+**Base blend**
 
 | Component | Weight |
 |-----------|--------|
-| **Bio‑BERT embeddings** | 0.60 |
-| **Jaccard** keywords | 0.10 |
-| **RapidFuzz** token‑set | 0.10 |
-| **[TF‑IDF](#tfidf)** cosine | 0.20 |
+| **RapidFuzz** `token_set_ratio` | 20 % |
+| **BiomedBERT** cosine sim. | 55 % |
+| Direct substring bonus | 25 % |
 
-A relevance filter down‑weights cases with zero lexical overlap.
+**Rule‑based boosts / penalties** (applied *after* the blend, then clipped to \[0, 1\])  
+
+* +0 – 0.30 for shared biology keywords  
+* +0 – 0.20 for shared medical/health keywords  
+* +0.25 if both degrees fall in the *same* broad domain group  
+* +0.30 for the specific *human biology ↔ physiology* pair  
+* −0.40 penalty if sociology mismatches with biology‑heavy terms  
 
 ---
 
-### 7 · match_by_motivation_essay  
-Uses a *general* Sentence‑BERT (`all‑mpnet‑base‑v2`) plus keyword Jaccard and **TF‑IDF**.
+### 5 · match_by_clinical_interests
+
+Steps  
+1. Normalise checkbox + free‑text into sets  
+2. Compute the three similarities below  
+3. **Return their average**  
+
+| Component | Weight |
+|-----------|--------|
+| Jaccard overlap | 33 % |
+| RapidFuzz `token_set_ratio` | 33 % |
+| **BiomedBERT** similarity | 33 % |
+
+*(No additional boosts or penalties.)*
+
+---
+
+### 6 · match_by_research_interests
+
+| Component | Weight |
+|-----------|--------|
+| **BiomedBERT** embeddings | 60 % |
+| Jaccard keywords | 10 % |
+| RapidFuzz token‑set | 10 % |
+| **[TF‑IDF](#tfidf)** cosine | 20 % |
+
+*A relevance filter down‑weights pairs with **zero** lexical overlap (see code comment).*  
+
+---
+
+### 7 · match_by_motivation_essay
+
+| Component | Weight |
+|-----------|--------|
+| `all‑mpnet‑base‑v2` embeddings | 50 % |
+| Motivation‑keyword Jaccard | 30 % |
+| **TF‑IDF** cosine | 20 % |
 
 ---
 
 <a id="overall-match-index"></a>
 ## Overall match index
-1. Compute all component scores.  
-2. Combine with weights (defaults shown; override with `MATCH_WEIGHTS` env var).  
-3. Use `_safe_weighted_sum` to stay in 0–1 range even if some scores are missing.
 
-| Component | Default weight |
-|-----------|----------------|
-| year | 0.20 |
-| gap  | 0.10 |
-| degree | 0.15 |
-| clinical | 0.25 |
-| research | 0.15 |
+1. Compute each component score.  
+2. Combine with weights (defaults below; override via `MATCH_WEIGHTS` env var).  
+3. `_safe_weighted_sum` divides by the sum of *present* weights so missing data don’t inflate the index.
+
+| Component  | Default weight |
+|------------|----------------|
+| year       | 0.20 |
+| gap        | 0.10 |
+| degree     | 0.15 |
+| clinical   | 0.25 |
+| research   | 0.15 |
 | motivation | 0.10 |
-| orgs | 0.05 |
+| orgs       | 0.05 |
 
 ---
 
@@ -115,19 +126,16 @@ Uses a *general* Sentence‑BERT (`all‑mpnet‑base‑v2`) plus keyword Jaccar
 ## Algorithm glossary
 
 ### <a id="rapidfuzz"></a>RapidFuzz – Fuzzy string matching
-* **Core idea:** computes Levenshtein edit‑distance but tokenises first; order of words doesn’t matter.  
-* **Token‑set ratio:**  
-  1. Split both strings on whitespace/punctuation.  
-  2. Remove duplicate tokens.  
-  3. Join tokens and compute edit similarity → score in \[0–100\].  
-* **Toy example**
+* Computes normalised Levenshtein distance; `token_set_ratio` first converts each string to a *set* of unique tokens, so word order and duplicates don’t matter.  
+* Score range 0 – 100 → scaled to 0 – 1 in code.
+
+**Toy example**
 
 | s1 | s2 | token_set_ratio |
 |----|----|-----------------|
 | "Human Biology" | "Biology, Human" | 100 |
 | "Biology" | "Biomedical Engineering" | 32 |
 
-Python snippet  
 ```python
 from rapidfuzz import fuzz
 fuzz.token_set_ratio("Human Biology", "Biology, Human")  # 100
@@ -136,54 +144,39 @@ fuzz.token_set_ratio("Human Biology", "Biology, Human")  # 100
 ---
 
 ### <a id="tfidf"></a>TF‑IDF + Cosine similarity
-* **TF (term‑frequency):** how often each word appears in a document.  
-* **IDF (inverse document frequency):** log(N / df) down‑weights very common words like “the”.  
-* Multiply TF × IDF → TF‑IDF vector.  
-* **Cosine similarity** between two TF‑IDF vectors ≈ angle between them. Range \[-1,1\] but non‑negative with typical TF‑IDF.
-
-Why here: highlights uncommon biomedical terms shared between texts without heavy compute.
-
-*Toy example* (sklearn):
+* **TF** = term frequency, **IDF** = inverse document frequency.  
+* Multiplying them down‑weights stop‑words and common terms.  
+* Cosine similarity of non‑negative TF‑IDF vectors is therefore in **\[0, 1\]**.
 
 ```python
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 docs = ["microglia activation", "activation of microglia in AD"]
 tfidf = TfidfVectorizer().fit_transform(docs)
-cosine_similarity(tfidf[0], tfidf[1])  # 0.86
+cosine_similarity(tfidf[0], tfidf[1])  # ≈ 0.86
 ```
 
 ---
 
 ### <a id="jaccard"></a>Jaccard overlap
-Exact‑set similarity = |intersection| / |union|.  
-Useful for yes/no checkbox lists.
-
-Example:  
-*Set A* = {neurosurgery, surgery}  
-*Set B* = {neurosurgery, anesthesiology}  
-Jaccard = 1 / 3 ≈ 0.33
+|A ∩ B| / |A ∪ B|. Great for yes/no checkbox sets.
 
 ---
 
-### <a id="sentencebert"></a>Sentence‑/Bio‑BERT embeddings
-* **Sentence‑BERT:** fine‑tunes a transformer to map sentences into 768‑dim vectors where cosine ≈ semantic similarity.  
-* **Bio‑BERT:** pre‑trained on PubMed abstracts; better for biomedical terms.
-
-Example:
+### <a id="sentencebert"></a>Sentence‑/BiomedBERT embeddings
+* **Sentence‑BERT:** fine‑tuned to map sentences into 768‑dim vectors where cosine ≈ semantic similarity.  
+* **BiomedBERT** (`microsoft/BiomedNLP‑BiomedBERT‑base‑uncased‑abstract`): pre‑trained on PubMed; better for biomedical terms.
 
 ```python
 from sentence_transformers import SentenceTransformer, util
 model = SentenceTransformer('all-mpnet-base-v2')
-sim = util.cos_sim(model.encode("brain tumor"), model.encode("glioblastoma"))
-print(float(sim))  # ≈ 0.71
+util.cos_sim(model.encode("brain tumor"),
+             model.encode("glioblastoma")).item()  # ≈ 0.71
 ```
 
 ---
 
 ### Safe weighted average
-`_safe_weighted_sum(scores, weights)` divides by the sum of *present* weights, avoiding inflation when some component returns 0 because data are missing.
+`_safe_weighted_sum(scores, weights)` divides by the sum of **present** weights, so if a component is missing (NaN), the result stays in the 0‑1 range.
 
 ---
-
-*End of file.*
