@@ -46,7 +46,7 @@ class MatchingService:
         self.scaler = MinMaxScaler()
         self.med_students_df = None
         self.premed_df = None
-        self.embedding_model = SentenceTransformer('all-mpnet-base-v2')
+        self.embedding_model = SentenceTransformer('BAAI/bge-large-en-v1.5')
         
         # For TF-IDF calculations
         self.tfidf_vectorizer = TfidfVectorizer(stop_words='english', max_features=100)
@@ -368,10 +368,12 @@ class MatchingService:
             "global_matches": global_matches
         }
 
+    @lru_cache(maxsize=1000)
     def semantic_similarity(self, text1: str, text2: str) -> float:
         """
         Compute semantic similarity between two strings using sentence embeddings.
         Returns a float between 0.0 and 1.0.
+        Uses LRU cache to improve performance with the larger BGE model.
         """
         if not isinstance(text1, str) or not isinstance(text2, str):
             return 0.0
