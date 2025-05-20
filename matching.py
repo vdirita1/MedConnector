@@ -395,19 +395,9 @@ class MatchingService:
         
         if not premed_clean or not med_clean:
             return 0.0
-        
-        # Print debug info when physiology is involved
-        is_debug = ("physiology" in premed_clean or "physiology" in med_clean) and \
-                 ("human biology" in premed_clean or "human biology" in med_clean or "sociology" in med_clean)
-        
-        if is_debug:
-            print(f"\nDEBUG DEGREE MATCH: '{premed_clean}' vs '{med_clean}'")
             
         # 1. Fuzzy string matching score
         fuzzy_score = fuzz.token_set_ratio(premed_clean, med_clean) / 100.0
-        
-        if is_debug:
-            print(f"  • Fuzzy score: {fuzzy_score:.3f}")
             
         # 2. Biology-focused semantic similarity (using biomedical embedder instead of general one)
         try:
@@ -417,9 +407,6 @@ class MatchingService:
         except Exception:
             # Fallback to general embedder if bio embedder fails
             semantic_score = self.semantic_similarity(premed_clean, med_clean)
-            
-        if is_debug:
-            print(f"  • Semantic score: {semantic_score:.3f}")
         
         # 3. Direct substring match component
         direct_match_score = 0.0
@@ -431,9 +418,6 @@ class MatchingService:
         # Check for exact match 
         if premed_clean == med_clean:
             direct_match_score = 1.0  # Perfect match
-            
-        if is_debug:
-            print(f"  • Direct match score: {direct_match_score:.3f}")
         
         # 4. Domain specific boosting for science/medicine fields
         # Define related fields that should score higher
@@ -468,25 +452,17 @@ class MatchingService:
         premed_tokens = get_tokens(premed_clean)
         med_tokens = get_tokens(med_clean)
         
-        if is_debug:
-            print(f"  • Premed tokens: {premed_tokens}")
-            print(f"  • Med tokens: {med_tokens}")
-        
         bio_boost = 0.0
         for keyword in bio_related_keywords:
             # Check if keyword appears in either degree
             if keyword in premed_clean and keyword in med_clean:
                 bio_boost = max(bio_boost, 0.3)  # Bonus for shared biology keywords
-                if is_debug:
-                    print(f"  • Bio keyword match '{keyword}': +{bio_boost}")
                 
         med_boost = 0.0
         for keyword in medicine_related_keywords:
             if keyword in premed_clean and keyword in med_clean:
                 med_boost = max(med_boost, 0.2)  # Bonus for shared medical keywords
-                if is_debug:
-                    print(f"  • Med keyword match '{keyword}': +{med_boost}")
- 
+  
         # ---- Domain‑group mapping boost ----
         DOMAIN_GROUPS = {
             "life_sci": {
@@ -513,35 +489,23 @@ class MatchingService:
         for dom, keywords in DOMAIN_GROUPS.items():
             if any(any(tok in keyword or keyword in tok for keyword in keywords) for tok in premed_tokens):
                 premed_domain = dom
-                if is_debug:
-                    matching_keys = [tok for tok in premed_tokens if any(tok in keyword or keyword in tok for keyword in keywords)]
-                    print(f"  • Premed domain: {dom} from tokens {matching_keys}")
                     
             if any(any(tok in keyword or keyword in tok for keyword in keywords) for tok in med_tokens):
                 med_domain = dom
-                if is_debug:
-                    matching_keys = [tok for tok in med_tokens if any(tok in keyword or keyword in tok for keyword in keywords)]
-                    print(f"  • Med domain: {dom} from tokens {matching_keys}")
 
         domain_boost = 0.0
         if premed_domain and premed_domain == med_domain:
             # Strong boost when both degrees fall in the same broad domain
             domain_boost = 0.25
-            if is_debug:
-                print(f"  • Same domain boost: +{domain_boost}")
         elif premed_domain and med_domain and {premed_domain, med_domain}.issubset({"life_sci", "physical_sci"}):
             # Moderate boost when both are sciences but different branches
             domain_boost = 0.15
-            if is_debug:
-                print(f"  • Related science domain boost: +{domain_boost}")
                 
         # Add explicit check for 'human biology' vs 'physiology' - ensure this specific pair gets a good match
         human_bio_physio_boost = 0.0
         if ("human biology" in premed_clean and "physiology" in med_clean) or \
            ("physiology" in premed_clean and "human biology" in med_clean):
             human_bio_physio_boost = 0.3  # Strong boost for this specific pair
-            if is_debug:
-                print(f"  • Human biology/physiology specific boost: +{human_bio_physio_boost}")
                 
         # Add explicit penalty for 'sociology' when matching with biology terms
         sociology_penalty = 0.0
@@ -549,8 +513,6 @@ class MatchingService:
            any(bio_term in premed_clean or bio_term in med_clean 
                for bio_term in ["biology", "physiology", "biomedical", "health science"]):
             sociology_penalty = -0.4  # Strong penalty for this mismatch
-            if is_debug:
-                print(f"  • Sociology/biology mismatch penalty: {sociology_penalty}")
         
         # Apply all scores and adjustments
         score = (fuzzy_weight * fuzzy_score + 
@@ -560,10 +522,17 @@ class MatchingService:
         # Add boosts (including the new domain_boost), but cap at 1.0
         final_score = min(1.0, max(0.0, score + bio_boost + med_boost + domain_boost + human_bio_physio_boost + sociology_penalty))
         
-        if is_debug:
-            print(f"  • Base score: {score:.3f}")
-            print(f"  • Total adjustments: {bio_boost + med_boost + domain_boost + human_bio_physio_boost + sociology_penalty:.3f}")
-            print(f"  • FINAL SCORE: {final_score:.3f}\n")
+        # Print component scores
+        print(f"\nUndergrad Degree Component Scores:")
+        print(f"  • Fuzzy Score: {fuzzy_score:.3f}")
+        print(f"  • Semantic Score: {semantic_score:.3f}")
+        print(f"  • Direct Match Score: {direct_match_score:.3f}")
+        print(f"  • Bio Boost: {bio_boost:.3f}")
+        print(f"  • Med Boost: {med_boost:.3f}")
+        print(f"  • Domain Boost: {domain_boost:.3f}")
+        print(f"  • Human Bio/Physio Boost: {human_bio_physio_boost:.3f}")
+        print(f"  • Sociology Penalty: {sociology_penalty:.3f}")
+        print(f"  • Final Weighted Score: {final_score:.3f}")
         
         return final_score
 
@@ -633,7 +602,16 @@ class MatchingService:
         emb2 = self.bio_embedder.encode(med_text, convert_to_tensor=True)
         semantic_score = float(util.cos_sim(emb1, emb2)[0][0])
         # Blend equally
-        return (jaccard_score + fuzzy_score + semantic_score) / 3.0
+        final_score = (jaccard_score + fuzzy_score + semantic_score) / 3.0
+
+        # Print component scores
+        print(f"\nClinical Interests Component Scores:")
+        print(f"  • Jaccard Score: {jaccard_score:.3f}")
+        print(f"  • Fuzzy Score: {fuzzy_score:.3f}")
+        print(f"  • Semantic Score: {semantic_score:.3f}")
+        print(f"  • Final Weighted Score: {final_score:.3f}")
+
+        return final_score
 
     def match_by_clinical_interests(self, premed_interests: List[str], premed_other: str) -> List[Dict[str, Any]]:
         """
@@ -966,4 +944,13 @@ class MatchingService:
         if premed_clean and premed_clean in med_clean:
             score += 0.3  # Significant boost for direct match
         score = min(score, 1.0)  # Cap at 1.0
+
+        # Print component scores
+        print(f"\nResearch Interest Component Scores:")
+        print(f"  • Jaccard Score: {jaccard:.3f}")
+        print(f"  • Embedding Score: {embedding_score:.3f}")
+        print(f"  • Fuzzy Score: {fuzzy_score:.3f}")
+        print(f"  • TF-IDF Score: {tfidf_score:.3f}")
+        print(f"  • Final Weighted Score: {score:.3f}")
+
         return score
