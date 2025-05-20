@@ -1,5 +1,4 @@
-# need this to run the code successfully. 
-sentence-transformers>=2.2.0
+sentence-transformers>=2.2.2
 rapidfuzz>=2.13.0
 pandas>=1.3.0
 scikit-learn>=1.3.0
